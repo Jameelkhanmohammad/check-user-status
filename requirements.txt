@@ -4,5 +4,4 @@
 
 azure-functions
 pandas
-azure-cli
 requests

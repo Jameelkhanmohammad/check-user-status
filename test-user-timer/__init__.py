@@ -1,10 +1,9 @@
-from azure.cli.core import get_default_cli
 import azure.functions as func
-from datetime import datetime
+from datetime import datetime as dt
 from urllib import request
 import pandas as pd
-import subprocess
 import requests
+import datetime
 import logging
 import json
 import io
@@ -23,10 +22,7 @@ def check_status(row, read_df):
 def revoke_access(row, temp_df, headers):
     
     temp_df.drop(row['index'], inplace=True)
-    response = requests.delete(f"https://management.azure.com{row['id']}?api-version=2015-07-01", headers=headers)
-    
-    # revoke_command = f'az role assignment delete --assignee "{row.principalId}" --role "{row.role}"'.split()
-    # response = subprocess.check_output(revoke_command)
+    response = requests.delete(f"https://management.azure.com{row['id']}?api-version=2015-07-01", headers=headers)    
     logging.info(response)
 
 def get_role(role_id, headers):
@@ -34,33 +30,27 @@ def get_role(role_id, headers):
     role = requests.get(f'https://management.azure.com{role_id}?api-version=2015-07-01', headers=headers).json()['properties']
     
     return role['roleName']
-    
-def main(req: func.HttpRequest, inputBlob: func.InputStream, outputBlob: func.Out[bytes]) -> func.HttpResponse:
-    logging.info('Python HTTP trigger function processed a request.')
 
-    name = req.params.get('name')
-    if not name:
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            pass
-        else:
-            name = req_body.get('name')
+
+
+def main(mytimer: func.TimerRequest, inputBlob: func.InputStream, outputBlob: func.Out[bytes]) -> None:
+    
+    utc_timestamp = datetime.datetime.utcnow().replace(
+        tzinfo=datetime.timezone.utc).isoformat()
+
+    if mytimer.past_due:
+        logging.info('The timer is past due!')
 
     # Reading from the input binding
     input_data = io.StringIO(inputBlob.read().decode("utf-8"))
-    logging.info(input_data)
+    
     # Processing the csv file
     read_df = pd.read_csv(input_data, sep=",")
     logging.info(read_df)
 
     subscription_id = '3882abc4-c619-4abc-a930-9a71fc7c2343'
-    # command = f'az role assignment list --subscription {subscription_id}'.split()
-    # az_cli = get_default_cli()
-    # response = az_cli.invoke(command)
-    # logging.info(response)
-    # users_list = subprocess.check_output(command) 
     tenantID = '62bd2232-c68d-4580-9469-942cbf5ad6d1'
+
     token_url = f'https://login.microsoftonline.com/{tenantID}/oauth2/token'
 
     body = {'grant_type': 'client_credentials',
@@ -87,7 +77,7 @@ def main(req: func.HttpRequest, inputBlob: func.InputStream, outputBlob: func.Ou
     # users_df = pd.DataFrame(json.loads(users_list))
     users_df = temp_df[['name', 'id', 'principalId', 'role']]
 
-    if read_df.empty or datetime.today().strftime("%I:%M %p") == '12:00 AM':  
+    if read_df.empty or dt.today().strftime("%I:%M %p") == '12:00 AM':  
         users_df['count'] = 1
         stream = io.StringIO()
         users_df = users_df[['name', 'principalId', 'role', 'count']]
@@ -102,6 +92,7 @@ def main(req: func.HttpRequest, inputBlob: func.InputStream, outputBlob: func.Ou
 
         merged_df = read_df.merge(users_df1, on='principalId', how='outer')
 
+        merged_df.fillna('', inplace=True)
         merged_df['name_x'] = merged_df.apply(lambda row: row.name_y if row.name_x == '' else row.name_x, axis=1)
 
         merged_df['role_x'] = merged_df.apply(lambda row: row.role_y 
@@ -125,6 +116,7 @@ def main(req: func.HttpRequest, inputBlob: func.InputStream, outputBlob: func.Ou
         if not remove_access_df.empty: remove_access_df.apply(lambda row: revoke_access(row, temp_df, headers), axis=1)
 
         temp_df.drop('index', axis=1, inplace=True)
+        logging.info(temp_df)
         temp_df['count'] = temp_df['count'].astype(int)
         temp_df.drop('id', axis=1, inplace=True)
         final_df = temp_df.reset_index(drop=True)
@@ -134,11 +126,5 @@ def main(req: func.HttpRequest, inputBlob: func.InputStream, outputBlob: func.Ou
         final_df.to_csv(stream, sep=",", index=False)
         outputBlob.set(stream.getvalue())
         logging.info(final_df)
-    
-    if name:
-        return func.HttpResponse(f"Function executed successfully.")
-    else:
-        return func.HttpResponse(
-             "This HTTP triggered function executed successfully. Pass a name in the query string or in the request body for a personalized response.",
-             status_code=200
-        )
+
+    logging.info('Function ran at %s', utc_timestamp)
